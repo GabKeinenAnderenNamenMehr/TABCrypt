@@ -1,6 +1,10 @@
 # TABCrypt
 This is a (vibecoded) helper tool for modding the game They are Billions that can decrypt and encrypt ZXRules, ZXStrings, ZXCampaign and ZXCampaignStrings with a simple drag and drop. Speeds up the process of testing changes made to those files.
 
+## Changelog
+<ins>**Version 1.1**</ins>
+Added WinRAR support as alternative to 7-Zip
+
 ## Installation and Setup
 
 There are 2 Versions available:
