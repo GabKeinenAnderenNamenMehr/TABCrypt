@@ -3,6 +3,7 @@ This is a (vibecoded) helper tool for modding the game They are Billions that ca
 
 ## Changelog
 <ins>**Version 1.1**</ins>
+
 Added WinRAR support as alternative to 7-Zip
 
 ## Installation and Setup
