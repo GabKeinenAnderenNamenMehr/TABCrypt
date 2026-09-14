@@ -29,16 +29,37 @@ DEFAULT_PASSWORDS = {
 }
 
 DEFAULT_ZIP_PARAMS = {
+    "backend": "7-Zip",
     "mx": "9",
     "mm": "Deflate",
     "md": "32k",
     "mfb": "128",
 }
 
+BACKENDS = {
+    "7-Zip": {
+        "exe_names": ["7z.exe"],
+        "install_candidates": [
+            r"C:\Program Files\7-Zip\7z.exe",
+            r"C:\Program Files (x86)\7-Zip\7z.exe",
+        ],
+    },
+    "WinRAR": {
+        "exe_names": ["WinRAR.exe"],
+        "install_candidates": [
+            r"C:\Program Files\WinRAR\WinRAR.exe",
+            r"C:\Program Files (x86)\WinRAR\WinRAR.exe",
+        ],
+    },
+}
+
 DELETE_ARCHIVE_AFTER_UNPACK_DEFAULT = True
 
 CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "tabcrypt_config.json"
+)
+LEGACY_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "datcrypt_config.json"
 )
 
 ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
@@ -52,6 +73,12 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    if os.path.exists(LEGACY_CONFIG_FILE):
+        try:
+            with open(LEGACY_CONFIG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
@@ -79,7 +106,7 @@ def is_zip_file(path):
 #  MAIN APPLICATION
 # ============================================================
 
-class DatCryptApp:
+class TABCryptApp:
     def __init__(self, root):
         self.root = root
         self.root.title("TABCrypt - They Are Billions modding tool")
@@ -91,21 +118,27 @@ class DatCryptApp:
         self.passwords.update(cfg.get("passwords", {}))
         self.zip_params = dict(DEFAULT_ZIP_PARAMS)
         self.zip_params.update(cfg.get("zip_params", {}))
-        self.sevenzip_path = cfg.get("sevenzip_path")
+
+        self.program_paths = {name: "" for name in BACKENDS}
+        legacy_sevenzip = cfg.get("sevenzip_path")
+        if legacy_sevenzip:
+            self.program_paths["7-Zip"] = legacy_sevenzip
+        self.program_paths.update(cfg.get("program_paths", {}))
 
         self.delete_var = tk.BooleanVar(value=DELETE_ARCHIVE_AFTER_UNPACK_DEFAULT)
 
         self._build_menu()
         self._build_ui()
 
-        self.root.after(100, self.ensure_sevenzip)
+        self.root.after(100, self.ensure_backends)
 
     # --------------------------------------------------------
     # SAVE CONFIGURATION
     # --------------------------------------------------------
     def save_all_config(self):
         cfg = load_config()
-        cfg["sevenzip_path"] = self.sevenzip_path
+        cfg.pop("sevenzip_path", None)
+        cfg["program_paths"] = self.program_paths
         cfg["passwords"] = self.passwords
         cfg["zip_params"] = self.zip_params
         save_config(cfg)
@@ -129,8 +162,9 @@ class DatCryptApp:
         settings_menu.add_command(
             label="ZIP Parameters...", command=lambda: self.open_settings(tab=1)
         )
-        settings_menu.add_separator()
-        settings_menu.add_command(label="7z.exe Path...", command=self.choose_sevenzip)
+        settings_menu.add_command(
+            label="Programs...", command=lambda: self.open_settings(tab=2)
+        )
         menubar.add_cascade(label="Settings", menu=settings_menu)
 
         self.root.config(menu=menubar)
@@ -192,40 +226,101 @@ class DatCryptApp:
         zip_frame = ttk.Frame(notebook, padding=10)
         notebook.add(zip_frame, text="ZIP Parameters")
 
-        ttk.Label(zip_frame, text="Compression level (0-9):").grid(
+        ttk.Label(zip_frame, text="Program:").grid(
             row=0, column=0, sticky="w", padx=5, pady=8
+        )
+        backend_var = tk.StringVar(value=self.get_active_backend_name())
+        backend_combo = ttk.Combobox(
+            zip_frame, textvariable=backend_var, width=17, state="readonly",
+            values=list(BACKENDS.keys()),
+        )
+        backend_combo.grid(row=0, column=1, padx=5, pady=8, sticky="w")
+
+        ttk.Label(zip_frame, text="Compression level (0-9):").grid(
+            row=1, column=0, sticky="w", padx=5, pady=8
         )
         mx_var = tk.StringVar(value=str(self.zip_params.get("mx", "9")))
         ttk.Spinbox(zip_frame, from_=0, to=9, textvariable=mx_var, width=10).grid(
-            row=0, column=1, padx=5, pady=8, sticky="w"
+            row=1, column=1, padx=5, pady=8, sticky="w"
         )
 
-        ttk.Label(zip_frame, text="Compression method:").grid(
-            row=1, column=0, sticky="w", padx=5, pady=8
-        )
+        mm_label = ttk.Label(zip_frame, text="Compression method:")
+        mm_label.grid(row=2, column=0, sticky="w", padx=5, pady=8)
         mm_var = tk.StringVar(value=self.zip_params.get("mm", "Deflate"))
-        ttk.Combobox(
+        mm_combo = ttk.Combobox(
             zip_frame, textvariable=mm_var, width=17, state="readonly",
             values=["Deflate", "Deflate64", "Copy", "BZip2", "LZMA", "PPMd"],
-        ).grid(row=1, column=1, padx=5, pady=8, sticky="w")
-
-        ttk.Label(zip_frame, text="Dictionary size:").grid(
-            row=2, column=0, sticky="w", padx=5, pady=8
         )
+        mm_combo.grid(row=2, column=1, padx=5, pady=8, sticky="w")
+
+        md_label = ttk.Label(zip_frame, text="Dictionary size:")
+        md_label.grid(row=3, column=0, sticky="w", padx=5, pady=8)
         md_var = tk.StringVar(value=self.zip_params.get("md", "32k"))
-        ttk.Entry(zip_frame, textvariable=md_var, width=12).grid(
-            row=2, column=1, padx=5, pady=8, sticky="w"
-        )
+        md_entry = ttk.Entry(zip_frame, textvariable=md_var, width=12)
+        md_entry.grid(row=3, column=1, padx=5, pady=8, sticky="w")
 
-        ttk.Label(zip_frame, text="Word size (fast bytes):").grid(
-            row=3, column=0, sticky="w", padx=5, pady=8
-        )
+        mfb_label = ttk.Label(zip_frame, text="Word size (fast bytes):")
+        mfb_label.grid(row=4, column=0, sticky="w", padx=5, pady=8)
         mfb_var = tk.StringVar(value=str(self.zip_params.get("mfb", "128")))
-        ttk.Entry(zip_frame, textvariable=mfb_var, width=12).grid(
-            row=3, column=1, padx=5, pady=8, sticky="w"
+        mfb_entry = ttk.Entry(zip_frame, textvariable=mfb_var, width=12)
+        mfb_entry.grid(row=4, column=1, padx=5, pady=8, sticky="w")
+
+        sevenzip_only_widgets = [mm_label, mm_combo, md_label, md_entry, mfb_label, mfb_entry]
+
+        note_label = ttk.Label(
+            zip_frame,
+            text="Method / dictionary size / word size only apply to 7-Zip.\n"
+                 "WinRAR only uses the compression level.",
+            foreground="#555555",
+            justify="left",
         )
+        note_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=(10, 0))
+
+        def update_param_visibility(*_args):
+            if backend_var.get() == "7-Zip":
+                for w in sevenzip_only_widgets:
+                    w.grid()
+                note_label.grid_remove()
+            else:
+                for w in sevenzip_only_widgets:
+                    w.grid_remove()
+                note_label.grid()
+
+        backend_var.trace_add("write", update_param_visibility)
+        update_param_visibility()
 
         zip_frame.columnconfigure(1, weight=1)
+
+        # --- Tab 3: Programs ---
+        programs_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(programs_frame, text="Programs")
+
+        program_path_vars = {}
+        for i, name in enumerate(BACKENDS.keys()):
+            ttk.Label(programs_frame, text=name + ":").grid(
+                row=i, column=0, sticky="w", padx=5, pady=8
+            )
+            var = tk.StringVar(value=self.program_paths.get(name, ""))
+            entry = ttk.Entry(programs_frame, textvariable=var, width=28)
+            entry.grid(row=i, column=1, padx=5, pady=8, sticky="ew")
+            program_path_vars[name] = var
+
+            def make_browse(nm=name, v=var):
+                def browse():
+                    chosen = filedialog.askopenfilename(
+                        title=f"Select {nm} executable",
+                        filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+                        parent=win,
+                    )
+                    if chosen:
+                        v.set(chosen)
+                return browse
+
+            ttk.Button(
+                programs_frame, text="Browse...", command=make_browse()
+            ).grid(row=i, column=2, padx=5, pady=8)
+
+        programs_frame.columnconfigure(1, weight=1)
 
         notebook.select(tab)
 
@@ -236,10 +331,13 @@ class DatCryptApp:
         def on_save():
             for name, var in pw_entries.items():
                 self.passwords[name] = var.get()
+            self.zip_params["backend"] = backend_var.get()
             self.zip_params["mx"] = mx_var.get().strip() or "9"
             self.zip_params["mm"] = mm_var.get().strip() or "Deflate"
             self.zip_params["md"] = md_var.get().strip() or "32k"
             self.zip_params["mfb"] = mfb_var.get().strip() or "128"
+            for name, var in program_path_vars.items():
+                self.program_paths[name] = var.get().strip()
             self.save_all_config()
             self.log("Settings saved.")
             win.destroy()
@@ -257,8 +355,7 @@ class DatCryptApp:
 
         header = ttk.Label(
             self.root,
-            text="Drop file(s) below or use 'File -> Open file...' "
-                 "to automatically encrypt/decrypt them.",
+            text="Drop file(s) below or use 'File -> Open file...' to automatically encrypt/decrypt them.",
             justify="center",
         )
         header.pack(fill="x", **pad)
@@ -311,44 +408,54 @@ class DatCryptApp:
         self.log_widget.configure(state="disabled")
 
     # --------------------------------------------------------
-    # LOCATE 7-ZIP
+    # BACKEND DETECTION
     # --------------------------------------------------------
-    def ensure_sevenzip(self):
-        if self.sevenzip_path and os.path.isfile(self.sevenzip_path):
-            self.log(f"7-Zip found: {self.sevenzip_path}")
-            return
-
-        candidates = [
-            r"C:\Program Files\7-Zip\7z.exe",
-            r"C:\Program Files (x86)\7-Zip\7z.exe",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "7z.exe"),
-        ]
-        for c in candidates:
+    def auto_detect_backend_path(self, name):
+        info = BACKENDS.get(name, {})
+        for c in info.get("install_candidates", []):
             if os.path.isfile(c):
-                self.sevenzip_path = c
-                self.save_all_config()
-                self.log(f"7-Zip found: {c}")
-                return
+                return c
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        for exe_name in info.get("exe_names", []):
+            candidate = os.path.join(script_dir, exe_name)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
 
-        messagebox.showinfo(
-            "7-Zip not found",
-            "Please select the 7z.exe file manually\n",
-            parent=self.root,
-        )
-        self.choose_sevenzip()
+    def ensure_backends(self):
+        for name in BACKENDS:
+            current = self.program_paths.get(name)
+            if current and os.path.isfile(current):
+                self.log(f"{name} found: {current}")
+                continue
+            found = self.auto_detect_backend_path(name)
+            if found:
+                self.program_paths[name] = found
+                self.log(f"{name} found: {found}")
+            else:
+                self.log(f"{name} not configured yet (set path in Settings -> Programs).")
+        self.save_all_config()
 
-    def choose_sevenzip(self):
-        chosen = filedialog.askopenfilename(
-            title="Select 7z.exe",
-            filetypes=[("7z.exe", "7z.exe"), ("All files", "*.*")],
-            parent=self.root,
-        )
-        if chosen:
-            self.sevenzip_path = chosen
-            self.save_all_config()
-            self.log(f"7-Zip set: {chosen}")
-        elif not self.sevenzip_path:
-            self.log("WARNING: Without 7z.exe, packing/unpacking is not possible.")
+        if not self.get_active_backend_exe():
+            messagebox.showinfo(
+                "Program not found",
+                f"The selected packing program '{self.get_active_backend_name()}' "
+                "was not found automatically.\nPlease set its path in "
+                "Settings -> Programs.",
+                parent=self.root,
+            )
+
+    def get_active_backend_name(self):
+        name = self.zip_params.get("backend", "7-Zip")
+        if name not in BACKENDS:
+            name = "7-Zip"
+        return name
+
+    def get_active_backend_exe(self):
+        path = self.program_paths.get(self.get_active_backend_name())
+        if path and os.path.isfile(path):
+            return path
+        return None
 
     # --------------------------------------------------------
     # DRAG AND DROP
@@ -362,8 +469,12 @@ class DatCryptApp:
             self.process_path(p)
 
     def process_path(self, path):
-        if not self.sevenzip_path:
-            messagebox.showerror("Error", "7z.exe has not been configured.")
+        if not self.get_active_backend_exe():
+            messagebox.showerror(
+                "Error",
+                f"'{self.get_active_backend_name()}' has not been configured "
+                "(see Settings -> Programs).",
+            )
             return
         if not os.path.isfile(path):
             self.log(f"File not found: {path}")
@@ -416,10 +527,7 @@ class DatCryptApp:
             return alt_path
 
     # --------------------------------------------------------
-    # 7-ZIP INVOCATION
-    # --------------------------------------------------------
-    # --------------------------------------------------------
-    # BUILD ZIP ARGS
+    # BUILD ZIP ARGS (7-ZIP)
     # --------------------------------------------------------
     def build_zip_args(self):
         p = self.zip_params
@@ -428,26 +536,55 @@ class DatCryptApp:
 
         args = ["-tzip", f"-mx={p.get('mx', '9')}", f"-mm={method}"]
 
-        # -md (dictionary size) is only a valid switch for LZMA/LZMA2/PPMd.
-        # Deflate/Deflate64/Copy/BZip2 use a fixed dictionary size and 7-Zip
-        # errors out ("Invalid parameter") if -md is passed for them.
         if method_upper in ("LZMA", "LZMA2", "PPMD") and p.get("md"):
             args.append(f"-md={p['md']}")
 
-        # -mfb (word size / fast bytes) is valid for Deflate/Deflate64 and
-        # the LZMA family/PPMd, but not for Copy or BZip2.
         if method_upper in ("DEFLATE", "DEFLATE64", "LZMA", "LZMA2", "PPMD") and p.get("mfb"):
             args.append(f"-mfb={p['mfb']}")
 
         return args
 
-    def run_7z(self, cmd):
+    def winrar_level(self):
+        try:
+            mx = int(self.zip_params.get("mx", "9"))
+        except ValueError:
+            mx = 9
+        level = round(mx / 9 * 5)
+        return max(0, min(5, level))
+
+    # --------------------------------------------------------
+    # BUILD PACK / UNPACK COMMANDS PER BACKEND
+    # --------------------------------------------------------
+    def build_pack_command(self, backend_name, exe, password, archive_path, input_name):
+        if backend_name == "WinRAR":
+            level = self.winrar_level()
+            return [
+                exe, "a", "-afzip", f"-m{level}", "-ep",
+                f"-p{password}", "-y", "-inul",
+                archive_path, input_name,
+            ]
+        return (
+            [exe, "a"]
+            + self.build_zip_args()
+            + [f"-p{password}", "-y", archive_path, input_name]
+        )
+
+    def build_unpack_command(self, backend_name, exe, password, archive_path, output_dir):
+        if backend_name == "WinRAR":
+            dest = output_dir if output_dir.endswith(os.sep) else output_dir + os.sep
+            return [exe, "x", f"-p{password}", "-y", "-o+", "-inul", archive_path, dest]
+        return [exe, "x", f"-p{password}", "-y", f"-o{output_dir}", archive_path]
+
+    # --------------------------------------------------------
+    # RUN EXTERNAL COMMAND
+    # --------------------------------------------------------
+    def run_command(self, cmd, cwd=None):
         try:
             creationflags = 0
             if os.name == "nt":
                 creationflags = subprocess.CREATE_NO_WINDOW
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, creationflags=creationflags
+                cmd, capture_output=True, text=True, creationflags=creationflags, cwd=cwd
             )
             output = (proc.stdout or "").strip()
             error = (proc.stderr or "").strip()
@@ -457,7 +594,7 @@ class DatCryptApp:
                 self.log(error)
             return proc.returncode
         except Exception as e:
-            self.log(f"Error calling 7z: {e}")
+            self.log(f"Error running {os.path.basename(cmd[0])}: {e}")
             return -1
 
     # --------------------------------------------------------
@@ -481,11 +618,14 @@ class DatCryptApp:
             )
             return
 
+        exe = self.get_active_backend_exe()
+        backend_name = self.get_active_backend_name()
+
         folder = os.path.dirname(os.path.abspath(path)) or "."
         canonical_name = base_name + ".dat"
         is_exact_basename = os.path.normcase(filename) == os.path.normcase(canonical_name)
 
-        tmp_dir = tempfile.mkdtemp(prefix="datcrypt_")
+        tmp_dir = tempfile.mkdtemp(prefix="tabcrypt_")
         try:
             work_copy = os.path.join(tmp_dir, canonical_name)
             try:
@@ -494,13 +634,12 @@ class DatCryptApp:
                 self.log(f"ERROR: Could not copy file: {e}")
                 return
 
-            tmp_archive = os.path.join(tmp_dir, base_name + ".__tmp__.zip")
-            cmd = (
-                [self.sevenzip_path, "a"]
-                + self.build_zip_args()
-                + [f"-p{password}", "-y", tmp_archive, work_copy]
+            tmp_archive_name = base_name + ".__tmp__.zip"
+            tmp_archive = os.path.join(tmp_dir, tmp_archive_name)
+            cmd = self.build_pack_command(
+                backend_name, exe, password, tmp_archive_name, canonical_name
             )
-            rc = self.run_7z(cmd)
+            rc = self.run_command(cmd, cwd=tmp_dir)
             if rc != 0 or not os.path.isfile(tmp_archive):
                 self.log(f"ERROR while packing: {filename}")
                 return
@@ -528,7 +667,7 @@ class DatCryptApp:
 
             self.log(
                 f"OK packed: '{os.path.basename(target_path)}' "
-                f"(password group: {base_name})"
+                f"(password group: {base_name}, program: {backend_name})"
             )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -554,6 +693,9 @@ class DatCryptApp:
             )
             return
 
+        exe = self.get_active_backend_exe()
+        backend_name = self.get_active_backend_name()
+
         folder = os.path.dirname(os.path.abspath(path)) or "."
         abs_path = os.path.abspath(path)
         canonical_path = os.path.join(folder, base_name + ".dat")
@@ -562,10 +704,10 @@ class DatCryptApp:
         )
         delete_archive = self.delete_var.get()
 
-        tmp_dir = tempfile.mkdtemp(prefix="datcrypt_")
+        tmp_dir = tempfile.mkdtemp(prefix="tabcrypt_")
         try:
-            cmd = [self.sevenzip_path, "x", f"-p{password}", "-y", f"-o{tmp_dir}", path]
-            rc = self.run_7z(cmd)
+            cmd = self.build_unpack_command(backend_name, exe, password, path, tmp_dir)
+            rc = self.run_command(cmd)
             if rc != 0:
                 self.log(
                     f"ERROR while unpacking '{path}' "
@@ -573,11 +715,11 @@ class DatCryptApp:
                 )
                 return
 
-            extracted_files = [
-                os.path.join(tmp_dir, f)
-                for f in os.listdir(tmp_dir)
-                if os.path.isfile(os.path.join(tmp_dir, f))
-            ]
+            extracted_files = []
+            for root_dir, _dirs, files in os.walk(tmp_dir):
+                for f in files:
+                    extracted_files.append(os.path.join(root_dir, f))
+
             if not extracted_files:
                 self.log(f"ERROR: Archive '{filename}' contained no file.")
                 return
@@ -610,7 +752,7 @@ class DatCryptApp:
 
             self.log(
                 f"OK unpacked: '{os.path.basename(target_path)}' "
-                f"(password group: {base_name})"
+                f"(password group: {base_name}, program: {backend_name})"
             )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -624,7 +766,7 @@ class DatCryptApp:
 
 def main():
     root = TkinterDnD.Tk()
-    app = DatCryptApp(root)
+    app = TABCryptApp(root)
     root.mainloop()
 
 
